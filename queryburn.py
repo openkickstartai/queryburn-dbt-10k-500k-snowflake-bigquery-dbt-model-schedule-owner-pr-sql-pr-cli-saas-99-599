@@ -31,12 +31,30 @@ def sanitize_sql(sql):
         raise ValueError("SQL input must be a non-empty string")
     if len(sql) > 1_000_000:
         raise ValueError("SQL exceeds 1MB safety limit")
+    # Strip null bytes and control characters (keep \n, \t, \r, space)
+    sql = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', sql)
+    if not sql.strip():
+        raise ValueError("SQL input must be a non-empty string")
     return sql.strip()
 
 
+
 def fingerprint(sql: str) -> str:
-    """Generate stable SHA-256 fingerprint with literal stripping."""
-    norm = re.sub(r'\s+', ' ', sql.upper().strip())
+
+
+def detect_antipatterns(sql: str) -> List[Finding]:
+    """Detect SQL anti-patterns that cause warehouse cost explosions."""
+    findings = []
+    cleaned = _strip_sql_noise(sql)
+    upper = cleaned.upper()
+    for i, line in enumerate(sql.split('\n')):
+        clean_line = _strip_sql_noise(line)
+        if re.search(r'SELECT\s+\*', clean_line, re.IGNORECASE):
+            findings.append(Finding("select-star", "warning",
+                "SELECT * \u2014 use column pruning to reduce scanned bytes", i + 1, 0.3))
+
+
+
     norm = re.sub(r"'[^']*'", "'?'", norm)
     norm = re.sub(r'\b\d+\b', '?', norm)
     return hashlib.sha256(norm.encode()).hexdigest()[:16]
