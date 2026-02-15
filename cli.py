@@ -7,8 +7,13 @@ from rich.console import Console
 from rich.table import Table
 
 from queryburn import analyze_sql, parse_dbt_manifest, gate_check
+from dashboard import (
+    render_cost_summary, render_pr_impact, render_anti_patterns,
+    format_report_json,
+)
 
 console = Console()
+
 SEV_COLORS = {"error": "red", "warning": "yellow", "info": "blue"}
 
 
@@ -93,3 +98,44 @@ def dbt_scan(manifest, warehouse):
 
 if __name__ == "__main__":
     cli()
+
+
+@cli.command()
+@click.option("--format", "fmt", default="table", type=click.Choice(["table", "json"]))
+@click.option("--config", "-c", default="queryburn.yaml")
+@click.argument("sql_files", nargs=-1, type=click.Path(exists=True))
+def report(fmt, config, sql_files):
+    """Generate cost breakdown report for SQL files."""
+    cfg = load_config(config)
+    wh = cfg.get("warehouse", "snowflake")
+
+    models = []
+    all_issues = []
+
+    for sql_file in sql_files:
+        sql = Path(sql_file).read_text()
+        result = analyze_sql(sql, wh)
+        cost = result.estimated_cost_usd
+        models.append({
+            "model": Path(sql_file).stem,
+            "owner": result.owner or "unassigned",
+            "schedule": "daily",
+            "monthly_cost": round(cost * 30, 2),
+        })
+        for f in result.findings:
+            all_issues.append({
+                "file": sql_file,
+                "line": f.line,
+                "type": f.rule,
+                "severity": f.severity,
+                "suggestion": f.message,
+            })
+
+    if fmt == "json":
+        click.echo(format_report_json(models, {}, all_issues))
+    else:
+        from dashboard import _make_console as _mc
+        rc = _mc()
+        render_cost_summary(models, console=rc)
+        if all_issues:
+            render_anti_patterns(all_issues, console=rc)
